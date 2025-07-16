@@ -8,3 +8,20 @@ wheels/
 
 # Virtual environments
 .venv
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Screenshots
+screenshot_*.png
+
+# Logs
+*.log

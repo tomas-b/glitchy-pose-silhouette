@@ -18,8 +18,9 @@ class ThreadedCamera:
         # Optimize camera settings
         self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.capture.set(cv2.CAP_PROP_FPS, 30)
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        # Try to set camera to 16:9 aspect ratio (common for fullscreen)
+        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         
         self.q = Queue(maxsize=2)
         self.running = True
@@ -94,6 +95,23 @@ class GlitchySilhouetteProcessor:
         self.use_pose_estimation = MEDIAPIPE_AVAILABLE
         self.pose_detected = False
         self.pose_landmarks = None
+        
+        # Hand gesture detection
+        self.left_hand_raised = False
+        self.right_hand_raised = False
+        self.current_skeleton_color = "normal"  # normal, left_hand, right_hand, both_hands
+        
+        # Head color effect parameters
+        self.head_effect_active = False
+        self.head_effect_start_time = None
+        self.head_effect_duration = 5.0  # 5 seconds
+        self.head_effect_radius = 80  # pixels around head
+        self.effect_screenshots_taken = False  # Track if we've taken screenshots
+        self.body_bbox = None  # Store body bounding box
+        self.cooldown_active = False
+        self.cooldown_start_time = None
+        self.cooldown_duration = 5.0  # 5 seconds cooldown after photos
+        
         if MEDIAPIPE_AVAILABLE:
             self.mp_pose = mp.solutions.pose
             self.pose = self.mp_pose.Pose(
@@ -104,6 +122,7 @@ class GlitchySilhouetteProcessor:
                 min_tracking_confidence=0.5
             )
             print("🤖 MediaPipe Pose estimation enabled!")
+            print("🙋 Hand gesture detection: Raise hands above head to change skeleton color!")
         
         # Performance monitoring
         self.fps_counter = 0
@@ -141,7 +160,7 @@ class GlitchySilhouetteProcessor:
                 # Initialize MOG2 with better parameters
                 self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
                     history=500,           # More frames for stable background
-                    varThreshold=16,       # Good default sensitivity
+                    varThreshold=135,      # Higher threshold to reduce sensitivity
                     detectShadows=True     # Remove shadows automatically
                 )
                 print("🎬 Countdown complete! Learning background...")
@@ -168,13 +187,21 @@ class GlitchySilhouetteProcessor:
             return self.draw_learning_progress(frame)
         
         # Phase 3: Motion Detection and Glitch Effects  
-        if self.ready_for_detection and self.background_image is not None:
+        if self.ready_for_detection and self.bg_subtractor is not None:
+            # Check if cooldown has finished
+            if self.cooldown_active and self.cooldown_start_time:
+                cooldown_elapsed = current_time - self.cooldown_start_time
+                if cooldown_elapsed >= self.cooldown_duration:
+                    # Cooldown finished
+                    self.cooldown_active = False
+                    self.cooldown_start_time = None
+                    print("✅ Cooldown finished! Pose detection re-enabled.")
             # Step 1: Pose estimation (if enabled)
             if self.use_pose_estimation:
                 self.detect_pose(frame)
             
-            # Step 2: Compare current frame against FROZEN background image
-            fg_mask = self.compare_against_frozen_background(frame, self.background_image)
+            # Step 2: Use MOG2 with ZERO learning rate (frozen background)
+            fg_mask = self.bg_subtractor.apply(frame, learningRate=0.0)
             
             # Step 3: Advanced edge detection
             edges = self.advanced_edge_detection(frame)
@@ -203,15 +230,52 @@ class GlitchySilhouetteProcessor:
             else:
                 soft_mask = clean_mask
             
-            # Step 7: Apply glitchy effects to silhouette areas
-            result = self.apply_glitch_effect(frame, soft_mask)
+            # Store current motion mask
+            self._current_motion_mask = soft_mask
             
-            # Step 8: Draw pose landmarks if detected
+            # Step 7: Apply glitchy effects to silhouette areas
+            # Only apply effects inside the skeleton bounding box if pose is detected
+            if self.pose_detected and self.pose_landmarks:
+                bbox = self.get_skeleton_bbox(frame.shape[:2])
+                if bbox:
+                    # Create mask for bounding box area
+                    bbox_mask = np.zeros_like(soft_mask)
+                    x, y, w, h = bbox
+                    bbox_mask[y:y+h, x:x+w] = 255
+                    
+                    # Apply effects only where both masks overlap
+                    combined_mask = cv2.bitwise_and(soft_mask, bbox_mask)
+                    result = self.apply_glitch_effect(frame, combined_mask)
+                else:
+                    result = frame.copy()
+            else:
+                # No pose detected, apply effects to full silhouette
+                result = self.apply_glitch_effect(frame, soft_mask)
+            
+            # Step 8: Apply head color effect if active and handle screenshots
+            if self.head_effect_active:
+                result = self.apply_head_color_effect(result, frame)
+            
+            # Step 9: Draw pose landmarks if detected
             if self.use_pose_estimation and self.pose_detected:
                 result = self.draw_pose_landmarks(result)
+                
+                # Draw bounding box outline when pose is detected
+                bbox = self.get_skeleton_bbox(frame.shape[:2])
+                if bbox and not self.head_effect_active:
+                    x, y, w, h = bbox
+                    # Draw a subtle outline to show the effect area
+                    cv2.rectangle(result, (x, y), (x + w, y + h), (100, 100, 100), 2)
             
-            # Step 9: Add debug info
+            # Step 10: Add debug info
             self.add_debug_overlay(result, len(contours), np.sum(clean_mask > 0))
+            
+            # Apply cooldown overlay if active
+            if self.cooldown_active and self.cooldown_start_time:
+                cooldown_elapsed = current_time - self.cooldown_start_time
+                if cooldown_elapsed < self.cooldown_duration:
+                    remaining_cooldown = self.cooldown_duration - cooldown_elapsed
+                    result = self.draw_cooldown_message(result, remaining_cooldown)
             
             return result
         
@@ -240,13 +304,18 @@ class GlitchySilhouetteProcessor:
         # Simple absolute difference
         diff = cv2.absdiff(current_gray, bg_gray)
         
-        # Threshold the difference - anything different from background
-        _, fg_mask = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+        # Threshold the difference using adjustable sensitivity
+        # Get current threshold from MOG2 (even though we're not using MOG2 for detection)
+        threshold = 30  # default
+        if self.bg_subtractor is not None:
+            threshold = int(self.bg_subtractor.getVarThreshold())
+        
+        _, fg_mask = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
         
         return fg_mask
     
     def detect_pose(self, frame):
-        """Detect pose using MediaPipe"""
+        """Detect pose using MediaPipe and analyze hand positions"""
         if not MEDIAPIPE_AVAILABLE:
             return
             
@@ -259,33 +328,199 @@ class GlitchySilhouetteProcessor:
         # Store results
         self.pose_detected = results.pose_landmarks is not None
         self.pose_landmarks = results.pose_landmarks
+        
+        # Analyze hand positions if pose detected
+        if self.pose_detected:
+            self.analyze_hand_positions()
     
+    def analyze_hand_positions(self):
+        """Check if hands are raised above head"""
+        if not self.pose_landmarks:
+            return
+            
+        landmarks = self.pose_landmarks.landmark
+        
+        # Key landmarks (MediaPipe pose landmark indices)
+        # 0: Nose, 15: Left wrist, 16: Right wrist
+        nose_y = landmarks[0].y
+        left_wrist_y = landmarks[15].y
+        right_wrist_y = landmarks[16].y
+        
+        # Check if hands are raised (lower Y value = higher on screen)
+        self.left_hand_raised = left_wrist_y < nose_y
+        self.right_hand_raised = right_wrist_y < nose_y
+        
+        # Determine skeleton color based on hand positions
+        if self.left_hand_raised and self.right_hand_raised:
+            self.current_skeleton_color = "both_hands"
+        elif self.left_hand_raised:
+            self.current_skeleton_color = "left_hand"
+        elif self.right_hand_raised:
+            self.current_skeleton_color = "right_hand"
+        else:
+            self.current_skeleton_color = "normal"
+        
+        # Activate head effect when hand is raised (not during cooldown)
+        if not self.cooldown_active:
+            if (self.left_hand_raised or self.right_hand_raised) and not self.head_effect_active:
+                self.head_effect_active = True
+                self.head_effect_start_time = time.time()
+                self.effect_screenshots_taken = False
+                print("🎨 Photo countdown started!")
+                print("📸 5-second countdown → Flash → Photo!")
+            elif not (self.left_hand_raised or self.right_hand_raised) and self.head_effect_active:
+                # Deactivate if hands are lowered
+                self.head_effect_active = False
+                self.head_effect_start_time = None
+                self.effect_screenshots_taken = False
+                print("🎨 Photo countdown cancelled")
+    
+    def get_skeleton_colors(self):
+        """Get colors based on current gesture state"""
+        if self.current_skeleton_color == "both_hands":
+            return (0, 255, 0), (0, 255, 0)  # Green landmarks and connections
+        elif self.current_skeleton_color == "left_hand":
+            return (255, 0, 0), (255, 100, 0)  # Blue landmarks, cyan connections
+        elif self.current_skeleton_color == "right_hand":
+            return (0, 0, 255), (0, 100, 255)  # Red landmarks, orange connections
+        else:
+            return (0, 255, 255), (255, 0, 255)  # Yellow landmarks, magenta connections (original)
+
     def draw_pose_landmarks(self, frame):
-        """Draw pose landmarks on frame"""
+        """Draw pose landmarks on frame with gesture-based colors"""
         if not (MEDIAPIPE_AVAILABLE and self.pose_detected and self.pose_landmarks):
             return frame
             
-        # Draw pose landmarks
-        mp_drawing = mp.solutions.drawing_utils
-        annotated_frame = frame.copy()
+        # Get colors based on current hand gestures
+        landmark_color, _ = self.get_skeleton_colors()
         
-        # Draw connections with custom style
-        mp_drawing.draw_landmarks(
-            annotated_frame,
-            self.pose_landmarks,
-            self.mp_pose.POSE_CONNECTIONS,
-            landmark_drawing_spec=mp_drawing.DrawingSpec(
-                color=(0, 255, 255),  # Yellow landmarks
-                thickness=2,
-                circle_radius=3
-            ),
-            connection_drawing_spec=mp_drawing.DrawingSpec(
-                color=(255, 0, 255),  # Magenta connections
-                thickness=2
-            )
-        )
+        # Draw only the landmark points (no connections)
+        annotated_frame = frame.copy()
+        h, w = frame.shape[:2]
+        
+        for landmark in self.pose_landmarks.landmark:
+            if landmark.visibility > 0.5:  # Only draw visible landmarks
+                x = int(landmark.x * w)
+                y = int(landmark.y * h)
+                cv2.circle(annotated_frame, (x, y), 3, landmark_color, -1)
+                cv2.circle(annotated_frame, (x, y), 4, (0, 0, 0), 1)  # Black outline
         
         return annotated_frame
+    
+    def draw_cooldown_message(self, frame, remaining_time):
+        """Draw simple countdown timer"""
+        result = frame.copy()
+        
+        # Draw countdown timer text
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text = f"Next photo in: {int(remaining_time + 1)}s"
+        text_size = cv2.getTextSize(text, font, 1.0, 2)[0]
+        
+        # Position at top center
+        text_x = (frame.shape[1] - text_size[0]) // 2
+        text_y = 50
+        
+        # Draw text with background for visibility
+        cv2.rectangle(result, (text_x - 10, text_y - text_size[1] - 10), 
+                     (text_x + text_size[0] + 10, text_y + 10), (0, 0, 0), -1)
+        cv2.putText(result, text, (text_x, text_y), font, 1.0, (255, 255, 255), 2)
+        
+        return result
+    
+    def get_skeleton_bbox(self, frame_shape):
+        """Calculate bounding box from skeleton landmarks"""
+        if not (self.pose_detected and self.pose_landmarks):
+            return None
+            
+        h, w = frame_shape
+        landmarks = self.pose_landmarks.landmark
+        
+        # Get all visible landmark positions
+        xs = []
+        ys = []
+        for landmark in landmarks:
+            if landmark.visibility > 0.5:  # Only use visible landmarks
+                xs.append(int(landmark.x * w))
+                ys.append(int(landmark.y * h))
+        
+        if not xs or not ys:
+            return None
+            
+        # Calculate bounding box with some padding
+        padding = 30
+        x_min = max(0, min(xs) - padding)
+        y_min = max(0, min(ys) - padding)
+        x_max = min(w, max(xs) + padding)
+        y_max = min(h, max(ys) + padding)
+        
+        return (x_min, y_min, x_max - x_min, y_max - y_min)
+    
+    def take_effect_screenshots(self, original_frame, effect_frame):
+        """Take screenshots of both original and effect frames"""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        
+        # Save original camera frame
+        original_filename = f"screenshot_original_{timestamp}.png"
+        cv2.imwrite(original_filename, original_frame)
+        print(f"📸 Saved original: {original_filename}")
+        
+        # Save frame with effects
+        effect_filename = f"screenshot_effect_{timestamp}.png"
+        cv2.imwrite(effect_filename, effect_frame)
+        print(f"📸 Saved with effects: {effect_filename}")
+    
+    def apply_head_color_effect(self, frame, original_frame):
+        """Draw bounding box around detected pose for photo countdown"""
+        if not self.head_effect_start_time:
+            return frame
+        
+        # Check if effect duration has expired
+        elapsed_time = time.time() - self.head_effect_start_time
+        if elapsed_time > self.head_effect_duration:
+            self.head_effect_active = False
+            self.head_effect_start_time = None
+            self.effect_screenshots_taken = False
+            # Start cooldown period
+            self.cooldown_active = True
+            self.cooldown_start_time = time.time()
+            print("🎨 Photo taken!")
+            print("⏸️  Starting 5-second cooldown...")
+            return frame
+        
+        # Take screenshots at the end
+        if elapsed_time >= self.head_effect_duration - 0.1 and not self.effect_screenshots_taken:
+            self.take_effect_screenshots(original_frame, frame)
+            self.effect_screenshots_taken = True
+        
+        result = frame.copy()
+        
+        # Draw skeleton bounding box if pose is detected
+        if self.pose_detected and self.pose_landmarks:
+            bbox = self.get_skeleton_bbox(frame.shape[:2])
+            if bbox:
+                x, y, w, h = bbox
+                # Red countdown box
+                box_color = (0, 0, 255)  # BGR format, red
+                cv2.rectangle(result, (x, y), (x + w, y + h), box_color, 6)
+                
+                # Add countdown text
+                remaining = self.head_effect_duration - elapsed_time
+                countdown_text = f"{int(remaining + 1)}"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 2.0
+                thickness = 3
+                text_size = cv2.getTextSize(countdown_text, font, font_scale, thickness)[0]
+                text_x = x + (w - text_size[0]) // 2
+                text_y = y - 10
+                cv2.putText(result, countdown_text, (text_x, text_y), font, font_scale, (0, 0, 255), thickness)
+        
+        # Flash white at the end
+        if 4.9 <= elapsed_time <= 5.0:
+            flash_intensity = 1.0 - ((elapsed_time - 4.9) / 0.1)
+            white_overlay = np.ones_like(result) * 255
+            result = cv2.addWeighted(result, 1.0 - flash_intensity, white_overlay, flash_intensity, 0)
+        
+        return result
 
     def advanced_edge_detection(self, frame):
         """Multi-scale adaptive edge detection"""
@@ -503,8 +738,8 @@ class GlitchySilhouetteProcessor:
 
     def add_debug_overlay(self, frame, contour_count, silhouette_pixels):
         """Add debug information to frame"""
-        cv2.rectangle(frame, (10, 10), (450, 190), (0, 0, 0), -1)
-        cv2.rectangle(frame, (10, 10), (450, 190), (255, 255, 255), 2)
+        cv2.rectangle(frame, (10, 10), (450, 210), (0, 0, 0), -1)
+        cv2.rectangle(frame, (10, 10), (450, 210), (255, 255, 255), 2)
         
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (20, 35), font, 0.7, (0, 255, 0), 2)
@@ -516,14 +751,27 @@ class GlitchySilhouetteProcessor:
         if self.use_pose_estimation:
             pose_status = "✓ Detected" if self.pose_detected else "✗ Not found"
             cv2.putText(frame, f"Pose: {pose_status}", (20, 135), font, 0.7, (0, 255, 0) if self.pose_detected else (0, 0, 255), 2)
+            
+            # Hand gesture status
+            if self.pose_detected:
+                gesture_text = f"Hands: L{'↑' if self.left_hand_raised else '↓'} R{'↑' if self.right_hand_raised else '↓'} ({self.current_skeleton_color})"
+                cv2.putText(frame, gesture_text, (20, 160), font, 0.5, (255, 255, 255), 1)
+                
+                # Head effect status
+                if self.head_effect_active and self.head_effect_start_time:
+                    elapsed = time.time() - self.head_effect_start_time
+                    remaining = max(0, self.head_effect_duration - elapsed)
+                    effect_text = f"Head Effect: {remaining:.1f}s remaining"
+                    cv2.putText(frame, effect_text, (20, 185), font, 0.5, (255, 200, 0), 1)
         
-        # Controls
-        cv2.putText(frame, f"Controls: SPACE=Mode WASD=Sens/Intensity R=Reset", (20, 160), font, 0.5, (200, 200, 200), 1)
+        # Controls - adjusted Y position if head effect is shown
+        y_offset = 205 if (self.pose_detected and self.head_effect_active) else 180
+        cv2.putText(frame, f"Controls: SPACE=Mode WASD=Sens/Intensity R=Reset", (20, y_offset), font, 0.5, (200, 200, 200), 1)
         
         # Show current sensitivity if available
         if self.bg_subtractor is not None:
             sensitivity = self.bg_subtractor.getVarThreshold()
-            cv2.putText(frame, f"MOG2 Var: {sensitivity:.0f} | Intensity: {self.glitch_intensity:.1f}", (20, 180), font, 0.5, (255, 255, 0), 1)
+            cv2.putText(frame, f"MOG2 Var: {sensitivity:.0f} | Intensity: {self.glitch_intensity:.1f}", (20, y_offset + 20), font, 0.5, (255, 255, 0), 1)
     
     def get_glitch_name(self):
         names = ["Random Pixels", "Glitch Blocks", "Scan Lines", "Datamosh"]
@@ -535,19 +783,19 @@ class GlitchySilhouetteProcessor:
             current_threshold = self.bg_subtractor.getVarThreshold()
             new_threshold = max(5, min(200, current_threshold + delta))
             self.bg_subtractor.setVarThreshold(new_threshold)
-            print(f"MOG2 Sensitivity: {new_threshold} (lower = more sensitive)")
+            # Sensitivity updated
         else:
-            print("Background subtractor not initialized yet")
+            pass  # Not initialized yet
     
     def cycle_glitch_mode(self):
         """Switch between glitch effects"""
         self.glitch_mode = (self.glitch_mode + 1) % 4
-        print(f"Glitch Mode: {self.get_glitch_name()}")
+        # Mode cycled
     
     def adjust_glitch_intensity(self, delta):
         """Adjust glitch effect intensity"""
         self.glitch_intensity = max(0.1, min(3.0, self.glitch_intensity + delta))
-        print(f"Glitch Intensity: {self.glitch_intensity:.1f}")
+        # Intensity adjusted
     
     def reset_to_countdown(self):
         """Reset the entire process back to countdown phase"""
@@ -558,7 +806,7 @@ class GlitchySilhouetteProcessor:
         self.learning_start = None
         self.learning_frames_processed = 0
         self.bg_subtractor = None
-        print("🔄 Reset to countdown phase - get ready!")
+        # Reset to countdown
 
 def main():
     print("🚀 Starting Glitchy Silhouette Replacement")
@@ -589,10 +837,37 @@ def main():
             result = processor.process_frame(frame)
             
             if result is not None:
-                # Display fullscreen
+                # Display fullscreen with proper scaling
                 cv2.namedWindow('Glitchy Silhouettes', cv2.WINDOW_NORMAL)
                 cv2.setWindowProperty('Glitchy Silhouettes', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                cv2.imshow('Glitchy Silhouettes', result)
+                
+                # Get screen dimensions
+                try:
+                    rect = cv2.getWindowImageRect('Glitchy Silhouettes')
+                    screen_width = rect[2] if rect[2] > 0 else 1920
+                    screen_height = rect[3] if rect[3] > 0 else 1080
+                except:
+                    # Fallback dimensions if getWindowImageRect fails
+                    screen_width = 1920
+                    screen_height = 1080
+                
+                # Calculate scaling to fill screen while maintaining aspect ratio
+                frame_h, frame_w = result.shape[:2]
+                scale_w = screen_width / frame_w
+                scale_h = screen_height / frame_h
+                scale = max(scale_w, scale_h)  # Use max to fill screen (may crop)
+                
+                # Scale the frame
+                new_width = int(frame_w * scale)
+                new_height = int(frame_h * scale)
+                result_scaled = cv2.resize(result, (new_width, new_height))
+                
+                # Crop to fit screen exactly
+                y_offset = (new_height - screen_height) // 2
+                x_offset = (new_width - screen_width) // 2
+                result_cropped = result_scaled[y_offset:y_offset+screen_height, x_offset:x_offset+screen_width]
+                
+                cv2.imshow('Glitchy Silhouettes', result_cropped)
         
         # Handle controls
         key = cv2.waitKey(1) & 0xFF
@@ -611,8 +886,7 @@ def main():
             processor.adjust_glitch_intensity(-0.2)
         elif key == ord('d') or key == ord('D'):  # D = Right intensity
             processor.adjust_glitch_intensity(0.2)
-        elif key != 255:  # Debug: show what key was pressed
-            print(f"Key pressed: {key}")
+        # Other keys ignored
     
     # Cleanup
     camera.stop()

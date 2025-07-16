@@ -1,90 +1,55 @@
-# Glitchy Silhouette <�
+# Glitchy Silhouette
 
-An interactive art installation that transforms your movements into glitchy digital art. Features real-time motion detection, pose tracking, and a gesture-controlled photo booth mode.
+Real-time silhouette detection with glitch effects and photo booth mode.
 
-## ( Features
+## Setup
 
-- **Real-time silhouette detection** with customizable glitch effects
-- **Pose tracking** with skeleton visualization
-- **Photo booth mode** - Raise your hand to trigger a countdown and capture
-- **Multiple glitch effects** - Random pixels, blocks, scan lines, and datamosh
-- **Performance optimized** - Effects only applied within detected body area
-
-## 🚀 Quick Start
-
-### Setup and run:
 ```bash
-# Clone the repository
 git clone https://github.com/malohuandus/test.git
 cd test
-
-# Sync dependencies with uv
 uv sync
-
-# Run the application
 uv run python glitchy_silhouette.py
 ```
 
-### Using self-contained script:
-```bash
-# Make executable
-chmod +x glitchy_pose_selfcontained.py
+## Usage
 
-# Run directly (uv required)
-./glitchy_pose_selfcontained.py
-```
+1. Stand in front of camera
+2. Wait for 5-second countdown
+3. Move to see glitch effects on your silhouette
+4. Raise hand above head to take a photo
 
-## 📸 Photo Booth Mode
+## Controls
 
-1. **Raise your hand above your head** to trigger photo mode
-2. **Red bounding box** appears with 5-second countdown
-3. **White flash** indicates photo capture
-4. **5-second cooldown** before next photo
+- **SPACE** - Change effect
+- **W/S** - Adjust sensitivity  
+- **A/D** - Adjust intensity
+- **R** - Reset
+- **Q** - Quit
 
-Photos are saved as:
-- `screenshot_original_*.png` - Raw camera frame
-- `screenshot_effect_*.png` - Frame with effects
+## Photo Booth
 
-## <� Controls
+When you raise your hand:
+- Red box appears with 5-second countdown
+- White flash = photo taken
+- Saves two images: original and with effects
+- 5-second cooldown before next photo
 
-| Key | Action |
-|-----|--------|
-| **SPACE** | Cycle glitch effects |
-| **W/S** | Adjust sensitivity |
-| **A/D** | Adjust intensity |
-| **R** | Reset background |
-| **Q/ESC** | Quit |
+## Effects
 
-## =� Requirements
+- Random Pixels - Colorful noise
+- Glitch Blocks - Rectangle distortions  
+- Scan Lines - Horizontal interference
+- Datamosh - Compression artifacts
+
+## Technical Details
+
+- Uses OpenCV for motion detection (MOG2 background subtraction)
+- MediaPipe for pose/skeleton tracking
+- Effects only apply within detected body area for performance
+- Threaded camera capture for smooth operation
+
+## Requirements
 
 - Python 3.8+
 - Webcam
-- OpenCV
-- NumPy
-- MediaPipe
-
-## 📖 Documentation
-
-See [DOCUMENTATION.md](DOCUMENTATION.md) for detailed technical information.
-
-## 🎨 Effects Gallery
-
-### Random Pixels
-Transforms detected motion into colorful pixel noise
-
-### Glitch Blocks
-Creates rectangular color distortions
-
-### Scan Lines
-Horizontal interference patterns
-
-### Datamosh
-Simulates video compression artifacts
-
-## > Contributing
-
-Feel free to submit issues and enhancement requests!
-
-## =� License
-
-MIT License - See LICENSE file for details
+- uv package manager

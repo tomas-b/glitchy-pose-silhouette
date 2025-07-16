@@ -1,8 +1,8 @@
 # Glitchy Silhouette
 
-Real-time silhouette detection with glitch effects and photo booth mode.
+Detección de siluetas en tiempo real con efectos glitch y modo cabina de fotos.
 
-## Setup
+## Instalación
 
 ```bash
 git clone https://github.com/tomas-b/glitchy-pose-silhouette.git
@@ -11,45 +11,45 @@ uv sync
 uv run python glitchy_silhouette.py
 ```
 
-## Usage
+## Uso
 
-1. Stand in front of camera
-2. Wait for 5-second countdown
-3. Move to see glitch effects on your silhouette
-4. Raise hand above head to take a photo
+1. Párate frente a la cámara
+2. Espera la cuenta regresiva de 5 segundos
+3. Muévete para ver efectos glitch en tu silueta
+4. Levanta la mano sobre tu cabeza para tomar una foto
 
-## Controls
+## Controles
 
-- **SPACE** - Change effect
-- **W/S** - Adjust sensitivity  
-- **A/D** - Adjust intensity
-- **R** - Reset
-- **Q** - Quit
+- **ESPACIO** - Cambiar efecto
+- **W/S** - Ajustar sensibilidad  
+- **A/D** - Ajustar intensidad
+- **R** - Reiniciar
+- **Q** - Salir
 
-## Photo Booth
+## Cabina de Fotos
 
-When you raise your hand:
-- Red box appears with 5-second countdown
-- White flash = photo taken
-- Saves two images: original and with effects
-- 5-second cooldown before next photo
+Cuando levantas la mano:
+- Aparece un recuadro rojo con cuenta regresiva de 5 segundos
+- Flash blanco = foto tomada
+- Guarda dos imágenes: original y con efectos
+- 5 segundos de espera antes de la siguiente foto
 
-## Effects
+## Efectos
 
-- Random Pixels - Colorful noise
-- Glitch Blocks - Rectangle distortions  
-- Scan Lines - Horizontal interference
-- Datamosh - Compression artifacts
+- Píxeles Aleatorios - Ruido colorido
+- Bloques Glitch - Distorsiones rectangulares  
+- Líneas de Escaneo - Interferencia horizontal
+- Datamosh - Artefactos de compresión
 
-## Technical Details
+## Detalles Técnicos
 
-- Uses OpenCV for motion detection (MOG2 background subtraction)
-- MediaPipe for pose/skeleton tracking
-- Effects only apply within detected body area for performance
-- Threaded camera capture for smooth operation
+- Usa OpenCV para detección de movimiento (sustracción de fondo MOG2)
+- MediaPipe para tracking de pose/esqueleto
+- Los efectos solo se aplican dentro del área del cuerpo detectado para mejor rendimiento
+- Captura de cámara con threads para operación fluida
 
-## Requirements
+## Requisitos
 
 - Python 3.8+
 - Webcam
-- uv package manager
+- Gestor de paquetes uv

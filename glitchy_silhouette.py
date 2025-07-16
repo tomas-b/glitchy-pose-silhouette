@@ -448,10 +448,27 @@ class GlitchySilhouetteProcessor:
             
         # Calculate bounding box with some padding
         padding = 30
-        x_min = max(0, min(xs) - padding)
-        y_min = max(0, min(ys) - padding)
-        x_max = min(w, max(xs) + padding)
-        y_max = min(h, max(ys) + padding)
+        x_min = min(xs) - padding
+        y_min = min(ys) - padding
+        x_max = max(xs) + padding
+        y_max = max(ys) + padding
+        
+        # Calculate width and height
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        # Make 10% bigger on all sides
+        expansion = 0.1
+        x_min = int(x_min - width * expansion / 2)
+        y_min = int(y_min - height * expansion / 2)
+        x_max = int(x_max + width * expansion / 2)
+        y_max = int(y_max + height * expansion / 2)
+        
+        # Ensure bounds are within frame
+        x_min = max(0, x_min)
+        y_min = max(0, y_min)
+        x_max = min(w, x_max)
+        y_max = min(h, y_max)
         
         return (x_min, y_min, x_max - x_min, y_max - y_min)
     

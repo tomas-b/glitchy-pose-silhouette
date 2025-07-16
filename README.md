@@ -5,8 +5,8 @@ Real-time silhouette detection with glitch effects and photo booth mode.
 ## Setup
 
 ```bash
-git clone https://github.com/malohuandus/test.git
-cd test
+git clone https://github.com/tomas-b/glitchy-pose-silhouette.git
+cd glitchy-pose-silhouette
 uv sync
 uv run python glitchy_silhouette.py
 ```

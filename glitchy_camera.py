@@ -27,8 +27,9 @@ class ThreadedCamera:
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
-        self.q = Queue(maxsize=2)
+        self.q = Queue(maxsize=1)  # Reduce queue size to avoid latency
         self.running = True
+        self.dropped_frames = 0
         
     def start(self):
         self.thread = Thread(target=self.update, daemon=True)
@@ -39,8 +40,14 @@ class ThreadedCamera:
         while self.running:
             ret, frame = self.capture.read()
             if ret:
-                if not self.q.full():
-                    self.q.put(frame)
+                if self.q.full():
+                    # Drop old frame to keep latency low
+                    try:
+                        self.q.get_nowait()
+                        self.dropped_frames += 1
+                    except:
+                        pass
+                self.q.put(frame)
                     
     def read(self):
         if not self.q.empty():

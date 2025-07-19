@@ -120,7 +120,7 @@ class GlitchySilhouetteProcessor:
         
         # Store ACTUAL background image for manual comparison
         self.background_image = None
-        self.use_manual_bg = True  # Use manual background comparison instead of MOG2
+        self.use_manual_bg = False  # Use manual background comparison instead of MOG2
         
         # MOG2 Background Subtractor (will be initialized after countdown)
         self.bg_subtractor = None
@@ -228,9 +228,12 @@ class GlitchySilhouetteProcessor:
                 # Initialize MOG2 with better parameters
                 self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
                     history=500,           # More frames for stable background
-                    varThreshold=135,      # Higher threshold to reduce sensitivity
-                    detectShadows=True     # Remove shadows automatically
+                    varThreshold=200,      # Much higher threshold to reduce sensitivity
+                    detectShadows=False    # Disable shadow detection for better performance
                 )
+                # Set additional parameters for better filtering
+                self.bg_subtractor.setBackgroundRatio(0.9)  # Stricter background model
+                self.bg_subtractor.setComplexityReductionThreshold(0.2)
                 print("🎬 Countdown complete! Learning background...")
         
         # Phase 2: Background Learning
@@ -250,120 +253,139 @@ class GlitchySilhouetteProcessor:
                 learning_elapsed >= self.learning_duration):
                 self.learning_background = False
                 self.ready_for_detection = True
-                print("✨ NOW COMPARING AGAINST FROZEN BACKGROUND FOREVER!")
+                print("✨ NOW COMPARING AGAINST FROZEN BACKGROUND!")
             
             return self.draw_learning_progress(frame)
         
         # Phase 3: Motion Detection and Glitch Effects  
-        if self.ready_for_detection and self.bg_subtractor is not None:
-            # Check if cooldown has finished
-            if self.cooldown_active and self.cooldown_start_time:
-                cooldown_elapsed = current_time - self.cooldown_start_time
-                if cooldown_elapsed >= self.cooldown_duration:
-                    # Cooldown finished
-                    self.cooldown_active = False
-                    self.cooldown_start_time = None
-                    print("✅ Cooldown finished! Pose detection re-enabled.")
-            
-            # If no effects are needed, skip processing (but still do minimal detection)
-            if not self.use_filter_effects and not self.use_pose_estimation:
-                result = frame.copy()
-                self.add_debug_overlay(result, 0, 0, camera_src)
-                return result
-            
-            # Step 1: Pose estimation (if enabled) - skip some frames for performance
-            if self.use_pose_estimation:
-                self.pose_frame_skip += 1
-                if self.pose_frame_skip >= 2:  # Process every 2nd frame
-                    self.detect_pose(frame)
-                    self.pose_frame_skip = 0
-            
-            # Step 2: Use MOG2 with ZERO learning rate (frozen background)
-            fg_mask = self.bg_subtractor.apply(frame, learningRate=0.0)
-            
-            # Step 3: Advanced edge detection
-            edges = self.advanced_edge_detection(frame)
-            
-            # Step 3: Combine background mask with edges (weighted blend)
-            combined_mask = cv2.addWeighted(fg_mask, 0.8, edges, 0.2, 0)
-            
-            # Step 4: Morphological operations for clean silhouettes
-            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, self.morph_kernel)
-            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, self.morph_kernel)
-            
-            # Step 5: Find contours and filter by size
-            contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # Create clean mask with only significant contours
-            clean_mask = np.zeros_like(combined_mask)
-            min_contour_area = 3000  # Larger = ignore small lighting changes
-            
-            for contour in contours:
-                if cv2.contourArea(contour) > min_contour_area:
-                    cv2.fillPoly(clean_mask, [contour], 255)
-            
-            # Step 6: Apply soft thresholding for gradual edges
-            if self.soft_threshold:
-                soft_mask = self.create_soft_mask(clean_mask)
-            else:
-                soft_mask = clean_mask
-            
-            # Store current motion mask
-            self._current_motion_mask = soft_mask
-            
-            # Step 7: Apply glitchy effects to silhouette areas
-            if self.use_filter_effects:
-                # When MediaPipe is off, don't apply mask restriction
-                if not self.use_pose_estimation:
-                    # Apply effects to full silhouette without skeleton bounding
-                    result = self.apply_glitch_effect(frame, soft_mask)
-                elif self.pose_detected and self.pose_landmarks:
-                    # MediaPipe is on and pose detected - use bounding box
-                    bbox = self.get_skeleton_bbox(frame.shape[:2])
-                    if bbox:
-                        # Create mask for bounding box area
-                        bbox_mask = np.zeros_like(soft_mask)
-                        x, y, w, h = bbox
-                        bbox_mask[y:y+h, x:x+w] = 255
-                        
-                        # Apply effects only where both masks overlap
-                        combined_mask = cv2.bitwise_and(soft_mask, bbox_mask)
-                        result = self.apply_glitch_effect(frame, combined_mask)
-                    else:
-                        result = frame.copy()
-                else:
-                    # MediaPipe is on but no pose detected
-                    result = self.apply_glitch_effect(frame, soft_mask)
-            else:
-                # Filter effects are off
-                result = frame.copy()
-            
-            # Step 8: Apply head color effect if active and handle screenshots
-            if self.head_effect_active:
-                result = self.apply_head_color_effect(result, frame)
-            
-            # Step 9: Draw pose landmarks if detected
-            if self.use_pose_estimation and self.pose_detected:
-                result = self.draw_pose_landmarks(result)
+        if self.ready_for_detection:
+            # Debug: Check if background image was captured
+            if self.background_image is None:
+                print("⚠️ ERROR: Background image not captured! Using current frame as background.")
+                self.background_image = frame.copy()
                 
-                # Draw bounding box outline when pose is detected
-                bbox = self.get_skeleton_bbox(frame.shape[:2])
-                if bbox and not self.head_effect_active:
-                    x, y, w, h = bbox
-                    # Draw a subtle outline to show the effect area
-                    cv2.rectangle(result, (x, y), (x + w, y + h), (100, 100, 100), 2)
+            if self.background_image is not None:
+                # Check if cooldown has finished
+                if self.cooldown_active and self.cooldown_start_time:
+                    cooldown_elapsed = current_time - self.cooldown_start_time
+                    if cooldown_elapsed >= self.cooldown_duration:
+                        # Cooldown finished
+                        self.cooldown_active = False
+                        self.cooldown_start_time = None
+                        print("✅ Cooldown finished! Pose detection re-enabled.")
+                
+                # If no effects are needed, skip processing (but still do minimal detection)
+                if not self.use_filter_effects and not self.use_pose_estimation:
+                    result = frame.copy()
+                    self.add_debug_overlay(result, 0, 0, camera_src)
+                    return result
+                
+                # Step 1: Pose estimation (if enabled) - skip some frames for performance
+                if self.use_pose_estimation:
+                    self.pose_frame_skip += 1
+                    if self.pose_frame_skip >= 2:  # Process every 2nd frame
+                        self.detect_pose(frame)
+                        self.pose_frame_skip = 0
+                
+                # Step 2: Use direct background comparison with color difference
+                if self.use_manual_bg:
+                    # Simple and FAST difference detection
+                    diff = cv2.absdiff(frame, self.background_image)
+                    gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                    _, fg_mask = cv2.threshold(gray_diff, 30, 255, cv2.THRESH_BINARY)
+                else:
+                    # Fall back to MOG2
+                    fg_mask = self.bg_subtractor.apply(frame, learningRate=0.0)
+                    _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
             
-            # Step 10: Add debug info
-            self.add_debug_overlay(result, len(contours), np.sum(clean_mask > 0), camera_src)
+                # Step 3: Advanced edge detection
+                edges = self.advanced_edge_detection(frame)
+                
+                # Step 3.5: Combine background mask with edges (weighted blend)
+                combined_mask = cv2.addWeighted(fg_mask, 0.8, edges, 0.2, 0)
             
-            # Apply cooldown overlay if active
-            if self.cooldown_active and self.cooldown_start_time:
-                cooldown_elapsed = current_time - self.cooldown_start_time
-                if cooldown_elapsed < self.cooldown_duration:
-                    remaining_cooldown = self.cooldown_duration - cooldown_elapsed
-                    result = self.draw_cooldown_message(result, remaining_cooldown)
+                # Apply another threshold to clean up
+                _, combined_mask = cv2.threshold(combined_mask, 100, 255, cv2.THRESH_BINARY)
+                
+                # Step 4: Morphological operations for clean silhouettes
+                # Larger kernel for stronger noise removal
+                large_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+                combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, large_kernel)
+                combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, self.morph_kernel)
             
-            return result
+                # Step 5: Find contours and filter by size
+                contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                # Create clean mask with only significant contours
+                clean_mask = np.zeros_like(combined_mask)
+                min_contour_area = 15000  # Even larger to ignore minor changes
+                
+                for contour in contours:
+                    if cv2.contourArea(contour) > min_contour_area:
+                        cv2.fillPoly(clean_mask, [contour], 255)
+            
+                # Step 6: Apply soft thresholding for gradual edges
+                if self.soft_threshold:
+                    soft_mask = self.create_soft_mask(clean_mask)
+                else:
+                    soft_mask = clean_mask
+                
+                # Store current motion mask
+                self._current_motion_mask = soft_mask
+            
+                # Step 7: Apply glitchy effects to silhouette areas
+                if self.use_filter_effects:
+                    # When MediaPipe is off, don't apply mask restriction
+                    if not self.use_pose_estimation:
+                        # Apply effects to full silhouette without skeleton bounding
+                        result = self.apply_glitch_effect(frame, soft_mask)
+                    elif self.pose_detected and self.pose_landmarks:
+                        # MediaPipe is on and pose detected - use bounding box
+                        bbox = self.get_skeleton_bbox(frame.shape[:2])
+                        if bbox:
+                            # Create mask for bounding box area
+                            bbox_mask = np.zeros_like(soft_mask)
+                            x, y, w, h = bbox
+                            bbox_mask[y:y+h, x:x+w] = 255
+                            
+                            # Apply effects only where both masks overlap
+                            combined_mask = cv2.bitwise_and(soft_mask, bbox_mask)
+                            result = self.apply_glitch_effect(frame, combined_mask)
+                        else:
+                            result = frame.copy()
+                    else:
+                        # MediaPipe is on but no pose detected
+                        result = self.apply_glitch_effect(frame, soft_mask)
+                else:
+                    # Filter effects are off
+                    result = frame.copy()
+            
+                # Step 8: Apply head color effect if active and handle screenshots
+                if self.head_effect_active:
+                    result = self.apply_head_color_effect(result, frame)
+            
+                # Step 9: Draw pose landmarks if detected
+                if self.use_pose_estimation and self.pose_detected:
+                    result = self.draw_pose_landmarks(result)
+                    
+                    # Draw bounding box outline when pose is detected
+                    bbox = self.get_skeleton_bbox(frame.shape[:2])
+                    if bbox and not self.head_effect_active:
+                        x, y, w, h = bbox
+                        # Draw a subtle outline to show the effect area
+                        cv2.rectangle(result, (x, y), (x + w, y + h), (100, 100, 100), 2)
+            
+                # Step 10: Add debug info
+                self.add_debug_overlay(result, len(contours), np.sum(clean_mask > 0), camera_src)
+                
+                # Apply cooldown overlay if active
+                if self.cooldown_active and self.cooldown_start_time:
+                    cooldown_elapsed = current_time - self.cooldown_start_time
+                    if cooldown_elapsed < self.cooldown_duration:
+                        remaining_cooldown = self.cooldown_duration - cooldown_elapsed
+                        result = self.draw_cooldown_message(result, remaining_cooldown)
+                
+                return result
         
         # Fallback: just show the frame
         return frame
@@ -848,7 +870,8 @@ class GlitchySilhouetteProcessor:
         
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(frame, f"FPS: {self.current_fps:.1f} | Camera: {camera_src}", (20, 35), font, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"Glitch Mode: {self.get_glitch_name()} | Effects: {'ON' if self.use_filter_effects else 'OFF'}", (20, 60), font, 0.7, (255, 255, 255), 2)
+        mode_text = "Lab Color Diff" if self.use_manual_bg else "MOG2"
+        cv2.putText(frame, f"Mode: {mode_text} | Glitch: {self.get_glitch_name()} | Effects: {'ON' if self.use_filter_effects else 'OFF'}", (20, 60), font, 0.7, (255, 255, 255), 2)
         cv2.putText(frame, f"Silhouettes: {contour_count}", (20, 85), font, 0.7, (255, 255, 255), 2)
         cv2.putText(frame, f"Pixels: {silhouette_pixels}", (20, 110), font, 0.7, (255, 255, 255), 2)
         
@@ -894,15 +917,18 @@ class GlitchySilhouetteProcessor:
         control_y += 18
         cv2.putText(frame, "[R] Reset", (20, control_y), font, 0.5, (200, 200, 200), 1)
         cv2.putText(frame, "[H] Hide This", (120, control_y), font, 0.5, (200, 200, 200), 1)
-        cv2.putText(frame, "[Q/ESC] Quit", (250, control_y), font, 0.5, (200, 200, 200), 1)
+        cv2.putText(frame, "[B] BG Mode", (250, control_y), font, 0.5, (200, 200, 200), 1)
+        
+        control_y += 18
+        cv2.putText(frame, "[Q/ESC] Quit", (20, control_y), font, 0.5, (200, 200, 200), 1)
         
         # Show current sensitivity if available
         if self.bg_subtractor is not None:
             sensitivity = self.bg_subtractor.getVarThreshold()
-            cv2.putText(frame, f"Sensitivity: {sensitivity:.0f} | Intensity: {self.glitch_intensity:.1f}", (20, 265), font, 0.5, (255, 255, 0), 1)
+            cv2.putText(frame, f"Sensitivity: {sensitivity:.0f} | Intensity: {self.glitch_intensity:.1f}", (20, control_y + 10), font, 0.5, (255, 255, 0), 1)
         
         # Camera list section
-        cameras_y = 285
+        cameras_y = control_y + 30
         cv2.putText(frame, "AVAILABLE CAMERAS:", (20, cameras_y), font, 0.6, (255, 255, 0), 2)
         cameras_y += 20
         
@@ -969,34 +995,61 @@ class GlitchySilhouetteProcessor:
         self.show_debug_info = not self.show_debug_info
         print(f"📊 Debug Info: {'ON' if self.show_debug_info else 'OFF'}")
     
+    def toggle_background_mode(self):
+        """Toggle between manual background comparison and MOG2"""
+        self.use_manual_bg = not self.use_manual_bg
+        mode_name = "Lab Color Difference" if self.use_manual_bg else "MOG2"
+        print(f"🎨 Background Detection Mode: {mode_name}")
+        print(f"  {'Direct comparison against frozen background' if self.use_manual_bg else 'Gaussian Mixture Model (MOG2)'}")
+    
     def detect_cameras(self):
         """Detect all available cameras and their properties"""
         cameras = []
         max_tested = 10  # Test up to 10 camera indices
+        consecutive_failures = 0
         
         for i in range(max_tested):
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                # Get camera properties
-                width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-                height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                
-                # Try to get camera name (not always available)
-                backend = cap.getBackendName()
-                
-                camera_info = {
-                    'index': i,
-                    'name': f"Camera {i} ({backend})",
-                    'resolution': f"{int(width)}x{int(height)}",
-                    'fps': fps
-                }
-                cameras.append(camera_info)
-                cap.release()
-            else:
-                # No more cameras found
-                if i > 0 and len(cameras) == 0:
+            try:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    # Test if we can actually read a frame
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None:
+                        # Get camera properties
+                        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        
+                        # Try to get camera name (not always available)
+                        backend = cap.getBackendName()
+                        
+                        camera_info = {
+                            'index': i,
+                            'name': f"Camera {i} ({backend})",
+                            'resolution': f"{int(width)}x{int(height)}",
+                            'fps': fps
+                        }
+                        cameras.append(camera_info)
+                        consecutive_failures = 0
+                    cap.release()
+                else:
+                    consecutive_failures += 1
+                    # Stop after 3 consecutive failures
+                    if consecutive_failures >= 3 and len(cameras) > 0:
+                        break
+            except Exception as e:
+                consecutive_failures += 1
+                if consecutive_failures >= 3 and len(cameras) > 0:
                     break
+        
+        # Always ensure at least camera 0 is in the list
+        if len(cameras) == 0:
+            cameras.append({
+                'index': 0,
+                'name': "Camera 0 (Default)",
+                'resolution': "Unknown",
+                'fps': 30.0
+            })
         
         return cameras
 
@@ -1009,6 +1062,7 @@ def main():
     print("  M     - Toggle MediaPipe pose detection")
     print("  F     - Toggle filter effects")
     print("  H     - Toggle debug info overlay")
+    print("  B     - Toggle background detection mode (Lab/MOG2)")
     print("  SPACE - Cycle glitch effects")
     print("  W/S   - Adjust motion sensitivity (up/down)") 
     print("  A/D   - Adjust glitch intensity (left/right)")
@@ -1023,86 +1077,103 @@ def main():
     # Let camera warm up
     time.sleep(1)
     
+    # Create window first
+    cv2.namedWindow('Glitchy Silhouettes', cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty('Glitchy Silhouettes', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    
     print("🎬 Camera ready! MOG2 learning background...")
     print("Move around after a few seconds to see clean silhouette detection!")
+    print("Press Q or ESC to quit")
     
-    while True:
-        frame = camera.read()
-        if frame is not None:
-            # Process frame for glitchy silhouettes
-            result = processor.process_frame(frame, camera.src)
+    frame_count = 0
+    try:
+        while True:
+            frame_count += 1
+            if frame_count % 100 == 0:
+                print(f"✓ Processing frame {frame_count}...")
+            frame = camera.read()
+            if frame is not None:
+                # Process frame for glitchy silhouettes
+                result = processor.process_frame(frame, camera.src)
+                
+                if result is not None and len(result.shape) == 3:
+                    # Get screen dimensions
+                    try:
+                        rect = cv2.getWindowImageRect('Glitchy Silhouettes')
+                        screen_width = rect[2] if rect[2] > 0 else 1920
+                        screen_height = rect[3] if rect[3] > 0 else 1080
+                    except:
+                        # Fallback dimensions if getWindowImageRect fails
+                        screen_width = 1920
+                        screen_height = 1080
+                    
+                    # Calculate scaling to fill screen while maintaining aspect ratio
+                    frame_h, frame_w = result.shape[:2]
+                    scale_w = screen_width / frame_w
+                    scale_h = screen_height / frame_h
+                    scale = max(scale_w, scale_h)  # Use max to fill screen (may crop)
+                    
+                    # Scale the frame
+                    new_width = int(frame_w * scale)
+                    new_height = int(frame_h * scale)
+                    result_scaled = cv2.resize(result, (new_width, new_height))
+                    
+                    # Crop to fit screen exactly
+                    y_offset = (new_height - screen_height) // 2
+                    x_offset = (new_width - screen_width) // 2
+                    result_cropped = result_scaled[y_offset:y_offset+screen_height, x_offset:x_offset+screen_width]
+                    
+                    cv2.imshow('Glitchy Silhouettes', result_cropped)
+                else:
+                    # Show a black screen if no result
+                    black_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                    cv2.putText(black_frame, "No camera feed", (200, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    cv2.imshow('Glitchy Silhouettes', black_frame)
+        
+            # Handle controls
+            key = cv2.waitKey(1) & 0xFF
             
-            if result is not None:
-                # Display fullscreen with proper scaling
-                cv2.namedWindow('Glitchy Silhouettes', cv2.WINDOW_NORMAL)
-                cv2.setWindowProperty('Glitchy Silhouettes', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                
-                # Get screen dimensions
-                try:
-                    rect = cv2.getWindowImageRect('Glitchy Silhouettes')
-                    screen_width = rect[2] if rect[2] > 0 else 1920
-                    screen_height = rect[3] if rect[3] > 0 else 1080
-                except:
-                    # Fallback dimensions if getWindowImageRect fails
-                    screen_width = 1920
-                    screen_height = 1080
-                
-                # Calculate scaling to fill screen while maintaining aspect ratio
-                frame_h, frame_w = result.shape[:2]
-                scale_w = screen_width / frame_w
-                scale_h = screen_height / frame_h
-                scale = max(scale_w, scale_h)  # Use max to fill screen (may crop)
-                
-                # Scale the frame
-                new_width = int(frame_w * scale)
-                new_height = int(frame_h * scale)
-                result_scaled = cv2.resize(result, (new_width, new_height))
-                
-                # Crop to fit screen exactly
-                y_offset = (new_height - screen_height) // 2
-                x_offset = (new_width - screen_width) // 2
-                result_cropped = result_scaled[y_offset:y_offset+screen_height, x_offset:x_offset+screen_width]
-                
-                cv2.imshow('Glitchy Silhouettes', result_cropped)
-        
-        # Handle controls
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q') or key == 27:  # ESC
-            break
-        elif key == ord(' '):  # SPACE
-            processor.cycle_glitch_mode()
-        elif key == ord('r'):  # R
-            processor.reset_to_countdown()
-        elif key == ord('w') or key == ord('W'):  # W = Up sensitivity
-            processor.adjust_sensitivity(-10)
-        elif key == ord('s') or key == ord('S'):  # S = Down sensitivity
-            processor.adjust_sensitivity(10)
-        elif key == ord('a') or key == ord('A'):  # A = Left intensity
-            processor.adjust_glitch_intensity(-0.2)
-        elif key == ord('d') or key == ord('D'):  # D = Right intensity
-            processor.adjust_glitch_intensity(0.2)
-        elif ord('0') <= key <= ord('9'):  # Number keys for camera switching
-            camera_index = key - ord('0')
-            # Check if this camera exists
-            if any(cam['index'] == camera_index for cam in processor.available_cameras):
-                if camera.src != camera_index:
-                    camera.switch_source(camera_index)
-                    processor.reset_to_countdown()
-            else:
-                print(f"⚠️  Camera {camera_index} not available")
-        elif key == ord('m') or key == ord('M'):  # Toggle MediaPipe
-            processor.toggle_mediapipe()
-        elif key == ord('f') or key == ord('F'):  # Toggle filter effects
-            processor.toggle_filter_effects()
-        elif key == ord('h') or key == ord('H'):  # Toggle debug info
-            processor.toggle_debug_info()
-        # Other keys ignored
-    
-    # Cleanup
-    camera.stop()
-    cv2.destroyAllWindows()
-    print("👋 Glitchy silhouettes complete!")
+            if key == ord('q') or key == 27:  # ESC
+                break
+            elif key == ord(' '):  # SPACE
+                processor.cycle_glitch_mode()
+            elif key == ord('r'):  # R
+                processor.reset_to_countdown()
+            elif key == ord('w') or key == ord('W'):  # W = Up sensitivity
+                processor.adjust_sensitivity(-10)
+            elif key == ord('s') or key == ord('S'):  # S = Down sensitivity
+                processor.adjust_sensitivity(10)
+            elif key == ord('a') or key == ord('A'):  # A = Left intensity
+                processor.adjust_glitch_intensity(-0.2)
+            elif key == ord('d') or key == ord('D'):  # D = Right intensity
+                processor.adjust_glitch_intensity(0.2)
+            elif ord('0') <= key <= ord('9'):  # Number keys for camera switching
+                camera_index = key - ord('0')
+                # Check if this camera exists
+                if any(cam['index'] == camera_index for cam in processor.available_cameras):
+                    if camera.src != camera_index:
+                        camera.switch_source(camera_index)
+                        processor.reset_to_countdown()
+                else:
+                    print(f"⚠️  Camera {camera_index} not available")
+            elif key == ord('m') or key == ord('M'):  # Toggle MediaPipe
+                processor.toggle_mediapipe()
+            elif key == ord('f') or key == ord('F'):  # Toggle filter effects
+                processor.toggle_filter_effects()
+            elif key == ord('h') or key == ord('H'):  # Toggle debug info
+                processor.toggle_debug_info()
+            elif key == ord('b') or key == ord('B'):  # Toggle background mode
+                processor.toggle_background_mode()
+            # Other keys ignored
+    except KeyboardInterrupt:
+        print("\n⚠️  Interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+    finally:
+        # Cleanup
+        camera.stop()
+        cv2.destroyAllWindows()
+        print("👋 Glitchy silhouettes complete!")
 
 if __name__ == "__main__":
     main()

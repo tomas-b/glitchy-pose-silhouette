@@ -1,55 +1,57 @@
-# Glitchy Silhouette
+# Glitchy Camera - Incremental Feature Versions
 
-Detección de siluetas en tiempo real con efectos glitch y modo cabina de fotos.
+This directory contains incremental versions of glitchy_camera.py, each building on the previous one:
 
-## Instalación
+## Base Version
+- **glitchy_camera.py** - The original working version with `--camera` command line argument
+
+## Feature Versions
+
+### 1. Toggles (glitchy_camera_1_toggles.py)
+- Added M key to toggle MediaPipe pose detection on/off
+- Added F key to toggle filter effects on/off  
+- Added H key to toggle debug overlay on/off
+- Shows toggle states in debug overlay
+
+### 2. Hand Gestures (glitchy_camera_2_hand_gestures.py)
+- Detects when hands are raised above head
+- Changes skeleton colors based on gestures:
+  - Yellow/Magenta: Normal (hands down)
+  - Blue/Cyan: Left hand raised
+  - Red/Orange: Right hand raised
+  - Green: Both hands raised
+- Shows hand status in debug overlay
+
+### 3. Photo Booth (glitchy_camera_3_photo_booth.py)
+- Raise hand to trigger 5-second photo countdown
+- Red bounding box appears around pose during countdown
+- White flash effect at photo capture
+- 5-second cooldown period between photos
+- Shows countdown timer and cooldown status
+
+### 4. Screenshots (glitchy_camera_4_screenshots.py)
+- Saves photos to `./screenshots/` directory
+- Captures both original and effect versions
+- Filenames use timestamp format: `YYYYMMDD_HHMMSS_original.png`
+- Directory created automatically if it doesn't exist
+
+## Usage
+
+All versions support the `--camera` argument:
 
 ```bash
-git clone https://github.com/tomas-b/glitchy-pose-silhouette.git
-cd glitchy-pose-silhouette
-uv sync
-uv run python glitchy_silhouette.py
+./glitchy_camera_4_screenshots.py --camera 3
 ```
 
-## Uso
+## Controls (Full Feature Set)
 
-1. Párate frente a la cámara
-2. Espera la cuenta regresiva de 5 segundos
-3. Muévete para ver efectos glitch en tu silueta
-4. Levanta la mano sobre tu cabeza para tomar una foto
+- **SPACE** - Cycle glitch effects (Random Pixels, Blocks, Scanlines, Datamosh)
+- **W/S** - Adjust motion sensitivity (up/down)
+- **A/D** - Adjust glitch intensity (left/right)
+- **M** - Toggle MediaPipe pose detection
+- **F** - Toggle filter effects
+- **H** - Toggle debug overlay
+- **R** - Reset to countdown phase
+- **ESC/Q** - Quit
 
-## Controles
-
-- **ESPACIO** - Cambiar efecto
-- **W/S** - Ajustar sensibilidad  
-- **A/D** - Ajustar intensidad
-- **R** - Reiniciar
-- **Q** - Salir
-
-## Cabina de Fotos
-
-Cuando levantas la mano:
-- Aparece un recuadro rojo con cuenta regresiva de 5 segundos
-- Flash blanco = foto tomada
-- Guarda dos imágenes: original y con efectos
-- 5 segundos de espera antes de la siguiente foto
-
-## Efectos
-
-- Píxeles Aleatorios - Ruido colorido
-- Bloques Glitch - Distorsiones rectangulares  
-- Líneas de Escaneo - Interferencia horizontal
-- Datamosh - Artefactos de compresión
-
-## Detalles Técnicos
-
-- Usa OpenCV para detección de movimiento (sustracción de fondo MOG2)
-- MediaPipe para tracking de pose/esqueleto
-- Los efectos solo se aplican dentro del área del cuerpo detectado para mejor rendimiento
-- Captura de cámara con threads para operación fluida
-
-## Requisitos
-
-- Python 3.8+
-- Webcam
-- Gestor de paquetes uv
+🤚 **Raise hand above head for photo booth mode!**

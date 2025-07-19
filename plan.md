@@ -1,0 +1,4 @@
+- camera toogle/swich sources, ( we can use the numbers 1,2,3 )
+- toggle mediapipe effect + toggle filter effect (when mediapipe is disable there should be no mask on the filter effect)
+- toggle the info tracking box ( h:hide? )
+- research: make the mediapipe encounter more than one skeleton?

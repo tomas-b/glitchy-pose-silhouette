@@ -23,9 +23,8 @@ class ThreadedCamera:
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         
-        self.q = Queue(maxsize=1)  # Reduce queue size to avoid latency
+        self.q = Queue(maxsize=2)
         self.running = True
-        self.dropped_frames = 0
         
     def start(self):
         self.thread = Thread(target=self.update, daemon=True)
@@ -36,14 +35,8 @@ class ThreadedCamera:
         while self.running:
             ret, frame = self.capture.read()
             if ret:
-                if self.q.full():
-                    # Drop old frame to keep latency low
-                    try:
-                        self.q.get_nowait()
-                        self.dropped_frames += 1
-                    except:
-                        pass
-                self.q.put(frame)
+                if not self.q.full():
+                    self.q.put(frame)
                     
     def read(self):
         if not self.q.empty():
@@ -138,8 +131,8 @@ class GlitchySilhouetteProcessor:
         self.glitch_intensity = 1.0
         
         # Soft thresholding parameters
-        self.soft_threshold = False  # Disable by default for performance
-        self.soft_radius = 10  # Smaller radius for performance
+        self.soft_threshold = True
+        self.soft_radius = 20  # pixels for soft edge falloff
         
         # Pose estimation parameters
         self.use_pose_estimation = MEDIAPIPE_AVAILABLE
@@ -182,9 +175,6 @@ class GlitchySilhouetteProcessor:
         self.fps_counter = 0
         self.fps_start = time.time()
         self.current_fps = 0
-        self.last_frame_time = time.time()
-        self.frame_times = []  # Rolling average
-        self.pose_frame_skip = 0  # Skip pose detection on some frames
         
         print("🎨 Advanced Glitchy Silhouette Processor initialized")
         print("Using KNN background subtraction + Multi-scale adaptive Canny")
@@ -195,20 +185,13 @@ class GlitchySilhouetteProcessor:
         if frame is None:
             return None
             
-        # Performance tracking - accurate per-frame timing
+        # Performance tracking
+        self.fps_counter += 1
+        if self.fps_counter % 30 == 0:
+            self.current_fps = 30 / (time.time() - self.fps_start)
+            self.fps_start = time.time()
+        
         current_time = time.time()
-        frame_time = current_time - self.last_frame_time
-        self.last_frame_time = current_time
-        
-        # Keep rolling average of last 30 frames
-        self.frame_times.append(frame_time)
-        if len(self.frame_times) > 30:
-            self.frame_times.pop(0)
-        
-        # Calculate FPS from average frame time
-        if len(self.frame_times) > 0:
-            avg_frame_time = sum(self.frame_times) / len(self.frame_times)
-            self.current_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
         
         # Phase 1: Countdown
         if self.countdown_active:
@@ -260,19 +243,9 @@ class GlitchySilhouetteProcessor:
                     self.cooldown_active = False
                     self.cooldown_start_time = None
                     print("✅ Cooldown finished! Pose detection re-enabled.")
-            
-            # If no effects are needed, skip processing
-            if not self.use_filter_effects and not self.use_pose_estimation:
-                result = frame.copy()
-                self.add_debug_overlay(result, 0, 0, camera_src)
-                return result
-            
-            # Step 1: Pose estimation (if enabled) - skip some frames for performance
+            # Step 1: Pose estimation (if enabled)
             if self.use_pose_estimation:
-                self.pose_frame_skip += 1
-                if self.pose_frame_skip >= 2:  # Process every 2nd frame
-                    self.detect_pose(frame)
-                    self.pose_frame_skip = 0
+                self.detect_pose(frame)
             
             # Step 2: Use MOG2 with ZERO learning rate (frozen background)
             fg_mask = self.bg_subtractor.apply(frame, learningRate=0.0)
@@ -365,25 +338,15 @@ class GlitchySilhouetteProcessor:
         return frame
     
     def create_soft_mask(self, binary_mask):
-        """Create soft-edged mask with gradual falloff - optimized"""
-        # Skip if radius is too small
-        if self.soft_radius < 3:
-            return binary_mask
-            
-        # Downsample for blur, then upsample - much faster
-        h, w = binary_mask.shape
-        scale = 0.25  # Process at 1/4 resolution
-        small_h, small_w = int(h * scale), int(w * scale)
+        """Create soft-edged mask with gradual falloff"""
+        # Convert binary mask to float
+        mask_float = binary_mask.astype(np.float32) / 255.0
         
-        # Downsample
-        small_mask = cv2.resize(binary_mask, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
+        # Apply Gaussian blur for soft edges
+        soft_mask = cv2.GaussianBlur(mask_float, (self.soft_radius * 2 + 1, self.soft_radius * 2 + 1), self.soft_radius / 3)
         
-        # Blur at lower resolution
-        kernel_size = max(3, int(self.soft_radius * scale) * 2 + 1)
-        soft_small = cv2.GaussianBlur(small_mask, (kernel_size, kernel_size), self.soft_radius * scale / 3)
-        
-        # Upsample back
-        soft_mask = cv2.resize(soft_small, (w, h), interpolation=cv2.INTER_LINEAR)
+        # Convert back to 0-255 range
+        soft_mask = (soft_mask * 255).astype(np.uint8)
         
         return soft_mask
     
@@ -407,23 +370,17 @@ class GlitchySilhouetteProcessor:
         return fg_mask
     
     def detect_pose(self, frame):
-        """Detect pose using MediaPipe and analyze hand positions - optimized"""
+        """Detect pose using MediaPipe and analyze hand positions"""
         if not MEDIAPIPE_AVAILABLE:
             return
-        
-        # Process at lower resolution for performance
-        h, w = frame.shape[:2]
-        scale = 0.5  # Process at half resolution
-        small_h, small_w = int(h * scale), int(w * scale)
-        small_frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
-        
+            
         # Convert BGR to RGB for MediaPipe
-        rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
         # Process pose detection
         results = self.pose.process(rgb_frame)
         
-        # Store results (landmarks are normalized 0-1, so they work at any resolution)
+        # Store results
         self.pose_detected = results.pose_landmarks is not None
         self.pose_landmarks = results.pose_landmarks
         
@@ -703,38 +660,25 @@ class GlitchySilhouetteProcessor:
         return result
     
     def glitch_random_pixels(self, frame, mask):
-        """Random pixel effect - heavily optimized version"""
+        """Random pixel effect with soft blending - FAST vectorized version"""
         result = frame.copy()
         
-        # Downsample mask for performance
-        h, w = mask.shape
-        scale = 0.5  # Process at half resolution
-        small_h, small_w = int(h * scale), int(w * scale)
-        
-        # Work on downsampled version
-        small_mask = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
-        small_frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
-        
-        # Only process where mask is active
-        motion_pixels = small_mask > 200  # Higher threshold
-        if np.any(motion_pixels):
-            # Limit number of pixels to process
-            num_pixels = np.sum(motion_pixels)
-            if num_pixels > 50000:  # Cap at 50k pixels
-                # Randomly sample pixels to process
-                indices = np.where(motion_pixels)
-                sample_size = 50000
-                selected = np.random.choice(len(indices[0]), sample_size, replace=False)
-                motion_pixels = np.zeros_like(motion_pixels)
-                motion_pixels[indices[0][selected], indices[1][selected]] = True
-                num_pixels = sample_size
+        if self.soft_threshold and len(mask.shape) == 2:
+            # FAST vectorized soft blending
+            alpha = mask.astype(np.float32) / 255.0
+            alpha_3d = np.stack([alpha, alpha, alpha], axis=2)
             
-            # Generate random colors
-            random_colors = np.random.randint(0, 255, (num_pixels, 3), dtype=np.uint8)
-            small_frame[motion_pixels] = random_colors
+            # Generate random colors for entire frame
+            random_frame = np.random.randint(0, 255, frame.shape, dtype=np.uint8)
             
-            # Upscale back with nearest neighbor for pixelated effect
-            result = cv2.resize(small_frame, (w, h), interpolation=cv2.INTER_NEAREST)
+            # Vectorized blend: result = alpha * random + (1-alpha) * original
+            result = (alpha_3d * random_frame + (1 - alpha_3d) * result).astype(np.uint8)
+        else:
+            # Original hard threshold version
+            motion_pixels = mask > 0
+            if np.any(motion_pixels):
+                random_colors = np.random.randint(0, 255, (np.sum(motion_pixels), 3), dtype=np.uint8)
+                result[motion_pixels] = random_colors
                 
         return result
     

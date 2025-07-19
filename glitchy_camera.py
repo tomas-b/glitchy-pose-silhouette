@@ -9,6 +9,7 @@ import time
 from threading import Thread
 from queue import Queue
 import random
+import argparse
 try:
     import mediapipe as mp
     MEDIAPIPE_AVAILABLE = True
@@ -19,7 +20,6 @@ except ImportError:
 class ThreadedCamera:
     """High-performance threaded camera capture"""
     def __init__(self, src=0):
-        self.src = src
         self.capture = cv2.VideoCapture(src)
         # Optimize camera settings
         self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -27,9 +27,8 @@ class ThreadedCamera:
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
-        self.q = Queue(maxsize=1)  # Reduce queue size to avoid latency
+        self.q = Queue(maxsize=2)
         self.running = True
-        self.dropped_frames = 0
         
     def start(self):
         self.thread = Thread(target=self.update, daemon=True)
@@ -40,14 +39,8 @@ class ThreadedCamera:
         while self.running:
             ret, frame = self.capture.read()
             if ret:
-                if self.q.full():
-                    # Drop old frame to keep latency low
-                    try:
-                        self.q.get_nowait()
-                        self.dropped_frames += 1
-                    except:
-                        pass
-                self.q.put(frame)
+                if not self.q.full():
+                    self.q.put(frame)
                     
     def read(self):
         if not self.q.empty():
@@ -57,48 +50,6 @@ class ThreadedCamera:
     def stop(self):
         self.running = False
         self.capture.release()
-    
-    def switch_source(self, new_src):
-        """Switch to a different camera source"""
-        # Stop current capture
-        self.running = False
-        # Wait for thread to finish
-        if hasattr(self, 'thread'):
-            self.thread.join(timeout=1.0)
-        self.capture.release()
-        
-        # Clear queue
-        while not self.q.empty():
-            self.q.get()
-        
-        # Small delay to ensure camera is fully released
-        time.sleep(0.5)
-        
-        # Start new capture
-        self.src = new_src
-        self.capture = cv2.VideoCapture(new_src)
-        # Re-apply camera settings
-        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.capture.set(cv2.CAP_PROP_FPS, 30)
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        
-        # Check if camera opened successfully
-        if not self.capture.isOpened():
-            print(f"⚠️  Failed to open camera {new_src}, falling back to camera 0")
-            self.src = 0
-            self.capture = cv2.VideoCapture(0)
-            self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.capture.set(cv2.CAP_PROP_FPS, 30)
-            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        
-        # Restart capture thread
-        self.running = True
-        self.thread = Thread(target=self.update, daemon=True)
-        self.thread.start()
-        
-        print(f"📷 Switched to camera {self.src}")
 
 class GlitchySilhouetteProcessor:
     """Advanced background subtraction with edge detection for clean silhouettes"""
@@ -108,9 +59,6 @@ class GlitchySilhouetteProcessor:
         self.countdown_active = True
         self.learning_background = False
         self.ready_for_detection = False
-        
-        # Detect available cameras
-        self.available_cameras = self.detect_cameras()
         
         # Countdown parameters
         self.countdown_start = time.time()
@@ -171,9 +119,8 @@ class GlitchySilhouetteProcessor:
         print("🎨 Advanced Glitchy Silhouette Processor initialized")
         print("Using KNN background subtraction + Multi-scale adaptive Canny")
         print("Countdown phase active - get ready!")
-        print(f"📷 Found {len(self.available_cameras)} cameras")
         
-    def process_frame(self, frame, camera_src=0):
+    def process_frame(self, frame):
         """Main processing pipeline with countdown -> learning -> detection phases"""
         if frame is None:
             return None
@@ -270,7 +217,7 @@ class GlitchySilhouetteProcessor:
                 result = self.draw_pose_landmarks(result)
             
             # Step 9: Add debug info
-            self.add_debug_overlay(result, len(contours), np.sum(clean_mask > 0), camera_src)
+            self.add_debug_overlay(result, len(contours), np.sum(clean_mask > 0))
             
             return result
         
@@ -560,15 +507,13 @@ class GlitchySilhouetteProcessor:
         
         return result
 
-    def add_debug_overlay(self, frame, contour_count, silhouette_pixels, camera_src=0):
+    def add_debug_overlay(self, frame, contour_count, silhouette_pixels):
         """Add debug information to frame"""
-        # Larger box to fit camera list
-        box_height = 210 + len(self.available_cameras) * 20
-        cv2.rectangle(frame, (10, 10), (450, box_height), (0, 0, 0), -1)
-        cv2.rectangle(frame, (10, 10), (450, box_height), (255, 255, 255), 2)
+        cv2.rectangle(frame, (10, 10), (450, 190), (0, 0, 0), -1)
+        cv2.rectangle(frame, (10, 10), (450, 190), (255, 255, 255), 2)
         
         font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(frame, f"FPS: {self.current_fps:.1f} | Camera: {camera_src}", (20, 35), font, 0.7, (0, 255, 0), 2)
+        cv2.putText(frame, f"FPS: {self.current_fps:.1f}", (20, 35), font, 0.7, (0, 255, 0), 2)
         cv2.putText(frame, f"Glitch Mode: {self.get_glitch_name()}", (20, 60), font, 0.7, (255, 255, 255), 2)
         cv2.putText(frame, f"Silhouettes: {contour_count}", (20, 85), font, 0.7, (255, 255, 255), 2)
         cv2.putText(frame, f"Pixels: {silhouette_pixels}", (20, 110), font, 0.7, (255, 255, 255), 2)
@@ -579,24 +524,12 @@ class GlitchySilhouetteProcessor:
             cv2.putText(frame, f"Pose: {pose_status}", (20, 135), font, 0.7, (0, 255, 0) if self.pose_detected else (0, 0, 255), 2)
         
         # Controls
-        cv2.putText(frame, f"Controls: 0-9=Camera SPACE=Mode WASD=Sens/Intensity R=Reset", (20, 160), font, 0.5, (200, 200, 200), 1)
+        cv2.putText(frame, f"Controls: SPACE=Mode WASD=Sens/Intensity R=Reset", (20, 160), font, 0.5, (200, 200, 200), 1)
         
         # Show current sensitivity if available
         if self.bg_subtractor is not None:
             sensitivity = self.bg_subtractor.getVarThreshold()
             cv2.putText(frame, f"MOG2 Var: {sensitivity:.0f} | Intensity: {self.glitch_intensity:.1f}", (20, 180), font, 0.5, (255, 255, 0), 1)
-        
-        # Camera list
-        cameras_y = 200
-        cv2.putText(frame, "AVAILABLE CAMERAS:", (20, cameras_y), font, 0.6, (255, 255, 0), 2)
-        cameras_y += 20
-        
-        for cam in self.available_cameras:
-            # Highlight current camera
-            color = (0, 255, 0) if cam['index'] == camera_src else (200, 200, 200)
-            cam_text = f"[{cam['index']}] {cam['name']}"
-            cv2.putText(frame, cam_text, (20, cameras_y), font, 0.5, color, 1)
-            cameras_y += 20
     
     def get_glitch_name(self):
         names = ["Random Pixels", "Glitch Blocks", "Scan Lines", "Datamosh"]
@@ -632,64 +565,18 @@ class GlitchySilhouetteProcessor:
         self.learning_frames_processed = 0
         self.bg_subtractor = None
         print("🔄 Reset to countdown phase - get ready!")
-    
-    def detect_cameras(self):
-        """Detect all available cameras and their properties"""
-        cameras = []
-        max_tested = 10  # Test up to 10 camera indices
-        consecutive_failures = 0
-        
-        for i in range(max_tested):
-            try:
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    # Test if we can actually read a frame
-                    ret, test_frame = cap.read()
-                    if ret and test_frame is not None:
-                        # Get camera properties
-                        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-                        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-                        fps = cap.get(cv2.CAP_PROP_FPS)
-                        
-                        # Try to get camera name (not always available)
-                        backend = cap.getBackendName()
-                        
-                        camera_info = {
-                            'index': i,
-                            'name': f"Camera {i} ({backend})",
-                            'resolution': f"{int(width)}x{int(height)}",
-                            'fps': fps
-                        }
-                        cameras.append(camera_info)
-                        consecutive_failures = 0
-                    cap.release()
-                else:
-                    consecutive_failures += 1
-                    # Stop after 3 consecutive failures
-                    if consecutive_failures >= 3 and len(cameras) > 0:
-                        break
-            except Exception as e:
-                consecutive_failures += 1
-                if consecutive_failures >= 3 and len(cameras) > 0:
-                    break
-        
-        # Always ensure at least camera 0 is in the list
-        if len(cameras) == 0:
-            cameras.append({
-                'index': 0,
-                'name': "Camera 0 (Default)",
-                'resolution': "Unknown",
-                'fps': 30.0
-            })
-        
-        return cameras
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Glitchy Silhouette Replacement with Camera Selection')
+    parser.add_argument('--camera', type=int, default=0, help='Camera index (default: 0)')
+    args = parser.parse_args()
+    
     print("🚀 Starting Glitchy Silhouette Replacement")
+    print(f"📷 Using camera index: {args.camera}")
     print("Using MOG2 background subtraction for professional results!")
     print()
     print("Controls:")
-    print("  0-9   - Switch camera source")
     print("  SPACE - Cycle glitch effects")
     print("  W/S   - Adjust motion sensitivity (up/down)") 
     print("  A/D   - Adjust glitch intensity (left/right)")
@@ -698,7 +585,7 @@ def main():
     print()
     
     # Initialize camera and processor
-    camera = ThreadedCamera(0).start()
+    camera = ThreadedCamera(args.camera).start()
     processor = GlitchySilhouetteProcessor()
     
     # Let camera warm up
@@ -711,7 +598,7 @@ def main():
         frame = camera.read()
         if frame is not None:
             # Process frame for glitchy silhouettes
-            result = processor.process_frame(frame, camera.src)
+            result = processor.process_frame(frame)
             
             if result is not None:
                 # Display fullscreen
@@ -736,15 +623,6 @@ def main():
             processor.adjust_glitch_intensity(-0.2)
         elif key == ord('d') or key == ord('D'):  # D = Right intensity
             processor.adjust_glitch_intensity(0.2)
-        elif ord('0') <= key <= ord('9'):  # Number keys for camera switching
-            camera_index = key - ord('0')
-            # Check if this camera exists
-            if any(cam['index'] == camera_index for cam in processor.available_cameras):
-                if camera.src != camera_index:
-                    camera.switch_source(camera_index)
-                    processor.reset_to_countdown()
-            else:
-                print(f"⚠️  Camera {camera_index} not available")
         elif key != 255:  # Debug: show what key was pressed
             print(f"Key pressed: {key}")
     

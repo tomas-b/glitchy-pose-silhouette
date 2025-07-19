@@ -22,6 +22,7 @@ env/
 
 # Screenshots
 screenshot_*.png
+screenshots/
 
 # Logs
 *.log

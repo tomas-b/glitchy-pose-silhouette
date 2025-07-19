@@ -265,7 +265,7 @@ class GlitchySilhouetteProcessor:
                     self.cooldown_start_time = None
                     print("✅ Cooldown finished! Pose detection re-enabled.")
             
-            # If no effects are needed, skip processing
+            # If no effects are needed, skip processing (but still do minimal detection)
             if not self.use_filter_effects and not self.use_pose_estimation:
                 result = frame.copy()
                 self.add_debug_overlay(result, 0, 0, camera_src)
@@ -576,15 +576,23 @@ class GlitchySilhouetteProcessor:
     
     def take_effect_screenshots(self, original_frame, effect_frame):
         """Take screenshots of both original and effect frames"""
+        import os
+        
+        # Create screenshots directory if it doesn't exist
+        screenshots_dir = "./screenshots"
+        if not os.path.exists(screenshots_dir):
+            os.makedirs(screenshots_dir)
+            print(f"📁 Created directory: {screenshots_dir}")
+        
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         
         # Save original camera frame
-        original_filename = f"screenshot_original_{timestamp}.png"
+        original_filename = os.path.join(screenshots_dir, f"{timestamp}_original.png")
         cv2.imwrite(original_filename, original_frame)
         print(f"📸 Saved original: {original_filename}")
         
         # Save frame with effects
-        effect_filename = f"screenshot_effect_{timestamp}.png"
+        effect_filename = os.path.join(screenshots_dir, f"{timestamp}_effect.png")
         cv2.imwrite(effect_filename, effect_frame)
         print(f"📸 Saved with effects: {effect_filename}")
     
